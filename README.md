@@ -57,6 +57,9 @@ The full workflow consists of six major stages:
 - Train 10 replicate models (different random seeds for robustness).
 - Save trained weights after 50 epochs or if validation loss does not improve for 10 consecutive epochs.
 
+**Run:**
+`python src/run_full_train.py --task_type classification --input_csv data/input_VRC01_IC80.csv`
+
 **Output:**  
 `results/full/PLM_classification_model_rep_{i}.pt` — fine-tuned model checkpoints.
 
@@ -69,6 +72,11 @@ The full workflow consists of six major stages:
 - Use each trained model to predict VRC01 sensitivity for all sequences.
 - Record predicted probabilities and class labels.
 - Compare predictions across replicates to assess reproducibility.
+
+**Run:**
+```bash
+`python src/run_predict.py --task_type classification --input_csv data/input_VRC01_IC80.csv`
+```
 
 **Output:**  
 `results/predictions/classification/train_rep_{i}.csv` — per-sequence predictions.
@@ -83,8 +91,13 @@ The full workflow consists of six major stages:
 - Aggregrate attention across layers ([attention rollout](https://doi.org/10.48550/arXiv.2005.00928)), and average over heads.
 - Compare patterns between sensitive and escape groups to detect co-evolving residues.
 
+**Run:**
+```bash
+`python src/run_attentions.py --task_type classification --input_csv data/input_VRC01_IC80.csv`
+```
+
 **Output:**  
-`results/attention_maps/classification/full/rep_{i}/` — co-attention matrices (`.npy`).
+`results/attention_maps/classification/rep_{i}/` — co-attention matrices (`.npy`).
 
 ---
 
@@ -97,6 +110,12 @@ The full workflow consists of six major stages:
   - `target_class = 1` → VRC01-sensitive
   - `target_class = 0` → VRC01-escape
 - Aggregate attribution results across replicates for stability analysis.
+
+**Run:**
+```bash
+python src/run_attributions.py --task_type classification --target_class 0 --input_csv data/input_VRC01_IC80.csv
+python src/run_attributions.py --task_type classification --target_class 1 --input_csv data/input_VRC01_IC80.csv
+```
 
 **Output:**  
 `results/attribution_maps/classification/rep_{i}/` — residue-level importance scores.
