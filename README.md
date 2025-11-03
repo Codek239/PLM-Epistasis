@@ -10,7 +10,7 @@ We fine-tune a protein language model (**ESM-2**) to predict HIV-1 Env (gp140) n
 |:------|:-------------|
 | **Model training** | Fine-tune ESM on labeled gp140 sequences (sensitive vs. resistant to VRC01) |
 | **Model evaluation** | Evaluate model performance and save per-sequence predictions. |
-| **Attention extraction** | Compute [attention rollout](https://doi.org/10.48550/arXiv.2005.00928) matrices to identify residue–residue dependencies. |
+| **Attention extraction** | Compute [attention rollout](https://doi.org/10.48550/arXiv.2005.00928) to identify residue–residue relationships. |
 | **Attribution analysis** | Use [Integrated Gradients (Captum)](https://captum.ai/docs/extension/integrated_gradients) to estimate residue-level contributions to class predictions. |
 | **Interpretation** | Identify mutation hotspots and co-evolving residues contributing to bnAb escape. |
 
@@ -117,14 +117,14 @@ The full workflow consists of six major stages:
 
 ---
 
-### ** Summary Table**
+### **Summary Table**
 
 | Stage | Input | Method | Output |
 |:------|:-------|:--------|:--------|
 | **1. Data Preparation** | gp140 sequences + IC80 | Curation, labeling | `input_VRC01_IC80.csv` |
 | **2. Model Fine-Tuning** | Labeled sequences | ESM-2 fine-tuning | `PLM_model_rep_i.pt` |
 | **3. Prediction** | Model checkpoints | Inference | `train_rep_i.csv` |
-| **4. Co-Attention Extraction** | Trained model | Transformer attention | `attention_maps/` |
+| **4. Co-Attention Extraction** | Trained ESM-2 model | Attention rollout | `attention_maps/` |
 | **5. Attribution Analysis** | Model + Captum | Integrated Gradients | `attribution_maps/` |
 | **6. Interpretation** | Outputs | Structural mapping | Hotspots, residue ranks |
 
