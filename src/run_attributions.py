@@ -127,6 +127,7 @@ def main():
         try:
             input_ids = batch["input_ids"].to(DEVICE)
             attention_mask = batch["attention_mask"].to(DEVICE)
+            shuffled_baselines = ut.create_shuffled_baselines(input_ids)
 
             # Call the method
             if args.method == 'smoothgrad':
@@ -136,7 +137,7 @@ def main():
                     )
             elif args.method == 'ig':
                 attribution, delta = calculator.compute_ig(
-                    sequence, input_ids, attention_mask, 
+                    sequence, input_ids, attention_mask, baseline_ids=shuffled_baselines,
                     n_steps=args.n_steps
                     )
             elif args.method == 'gxi':
