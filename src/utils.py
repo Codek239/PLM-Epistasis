@@ -395,3 +395,22 @@ class AttributionCalculator:
         
         # Slice to remove special tokens and match original sequence length
         return attributions_sum[1 : len(sequence) + 1]
+
+def create_shuffled_baselines(input_ids: torch.Tensor, n_shuffled_baselines: int = 20) -> torch.Tensor:
+    """Creates a batch of shuffled versions of the input_ids."""
+    
+    # Get the original sequence (assumes batch_size=1)
+    # [1, seq_len] -> [seq_len]
+    original_ids = input_ids.squeeze(0) 
+    
+    baseline_ids_list = []
+    for _ in range(n_shuffled_baselines):
+        # Create a random permutation (shuffle) of the token indices
+        shuffled_indices = torch.randperm(original_ids.shape[0])
+        shuffled_ids = original_ids[shuffled_indices]
+        baseline_ids_list.append(shuffled_ids)
+
+    # Stack into a single tensor: [n_shuffled_baselines, seq_len]
+    baseline_ids_tensor = torch.stack(baseline_ids_list).to(input_ids.device)
+    
+    return baseline_ids_tensor
