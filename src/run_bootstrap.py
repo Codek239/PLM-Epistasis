@@ -35,6 +35,7 @@ import json
 import numpy as np
 import pandas as pd
 from sklearn.dummy import DummyClassifier
+from sklearn.metrics import f1_score, accuracy_score
 from tqdm import tqdm
 
 # Local imports
@@ -45,7 +46,6 @@ import utils as ut
 # Defaults
 # ============================
 CLF_LABEL_NAME = "Label"
-REG_LABEL_NAME = "Value"
 LOG_DIR = "logs/bootstrap"
 RESULT_DIR = "results/bootstrap"
 # ============================
@@ -87,6 +87,7 @@ def main():
 
     # --- Setup ---
     os.makedirs(args.result_dir, exist_ok=True)
+    os.makedirs(args.log_dir, exist_ok=True)
     ut.set_seed(args.seed)
 
     # --- Load Data ---
@@ -97,8 +98,7 @@ def main():
     pred_df = pd.read_csv(args.pred_csv)
 
     if args.task_type == "regression":
-        y_true = eval_df[REG_LABEL_NAME].astype(float).values
-        clf_preds = pred_df["Prediction"].astype(float).values
+        raise ValueError(f"Unsupported task_type: {args.task_type}")
     else: # classification
         y_true = eval_df[CLF_LABEL_NAME].astype(int).values
         if args.num_classes != 2:
@@ -109,11 +109,11 @@ def main():
         clf_preds_list = []
         for pred in tqdm(pred_df["Prediction"], desc="Parsing predictions"):
             try:
-                match_0 = re.search(r"['\"]0['\"]:\s*([0-9\.]+)", str(pred))
-                match_1 = re.search(r"['\"]1['\"]:\s*([0-9\.]+)", str(pred))
+                match_0 = re.search(r"['\"]Class_0['\"]:\s*([0-9\.]+)", str(pred))
+                match_1 = re.search(r"['\"]Class_1['\"]:\s*([0-9\.]+)", str(pred))
                 
                 if not match_0 or not match_1:
-                    raise ValueError("Could not find keys '0' and '1' in pred string.")
+                    raise ValueError("Could not find keys 'Class_0' and 'Class_1' in pred string.")
                 
                 pred_0 = float(match_0.group(1))
                 pred_1 = float(match_1.group(1))
@@ -125,9 +125,8 @@ def main():
                 sys.exit(1)
         
         clf_preds = np.array(clf_preds_list)
-    
+        
     X_train_dummy = np.zeros(len(y_true))
-    
     if len(y_true) != len(clf_preds):
         logger.error(f"Mismatched lengths! True labels: {len(y_true)}, Predictions: {len(clf_preds)}")
         sys.exit(1)
@@ -137,21 +136,23 @@ def main():
     baseline = DummyClassifier(strategy=args.baseline_strategy, random_state=args.seed)
     baseline.fit(X_train_dummy, y_true)
     baseline_preds = baseline.predict(X_train_dummy)
-
-    # --- Calculate Observed Scores ---
-    clf_score_metric = ut.evaluate_predictions(pred=clf_preds, true=y_true, task_type=args.task_type)
-    baseline_score_metric = ut.evaluate_predictions(pred=baseline_preds, true=y_true, task_type=args.task_type)
-
-    logger.info("--- Observed Scores (on full set) ---")
-    for score in clf_score_metric:
-        logger.info(f"  - Estimator {score.upper()}: {clf_score_metric[score]:.4f}")
-        logger.info(f"  - Baseline  {score.upper()}: {baseline_score_metric[score]:.4f}")
-        logger.info(f"  - Observed Difference: {clf_score_metric[score] - baseline_score_metric[score]:+.4f}")
     
+    # --- Calculate Observed Scores (for reporting) ---
+    logger.info("--- Observed Scores (on full set) ---")
+    obs_clf_accuracy = accuracy_score(y_true, clf_preds)
+    obs_baseline_accuracy = accuracy_score(y_true, baseline_preds)
+    obs_clf_f1 = f1_score(y_true, clf_preds, average='weighted', zero_division=0)
+    obs_baseline_f1 = f1_score(y_true, baseline_preds, average='weighted', zero_division=0)
+
+    logger.info(f"  - Estimator ACCURACY: {obs_clf_accuracy:.4f}")
+    logger.info(f"  - Baseline  ACCURACY: {obs_baseline_accuracy:.4f}")
+    logger.info(f"  - Estimator F1_SCORE: {obs_clf_f1:.4f}")
+    logger.info(f"  - Baseline  F1_SCORE: {obs_baseline_f1:.4f}")
+
     # --- Run Bootstrap Test ---
     logger.info(f"Running {args.n_bootstrap} bootstrap samples...")
     n_samples = len(y_true)
-    better_metric_count = dict.fromkeys(clf_score_metric.keys(), 0)
+    better_metric_count = {"Accuracy":0, "F1_score":0}
     all_indices = np.arange(n_samples)
 
     for i in tqdm(range(args.n_bootstrap), desc="Bootstrapping"):
@@ -161,34 +162,63 @@ def main():
         bootstrap_clf_preds = clf_preds[bootstrap_indices]
         bootstrap_baseline_preds = baseline_preds[bootstrap_indices]
 
-        bootstrap_clf_score_metric = ut.evaluate_predictions(
-            pred=bootstrap_clf_preds, 
-            true=bootstrap_y_true, 
-            task_type=args.task_type
-            )
-        bootstrap_baseline_score_metric = ut.evaluate_predictions(
-            pred=bootstrap_baseline_preds, 
-            true=bootstrap_y_true, 
-            task_type=args.task_type
-            )
-        
-        for score in bootstrap_clf_score_metric:
-            bootstrap_metric_diff = bootstrap_clf_score_metric[score] - bootstrap_baseline_score_metric[score]
-            # Count times the estimator is strictly better
-            if bootstrap_metric_diff > 0:
-                better_metric_count[score] += 1
+        clf_accuracy = accuracy_score(bootstrap_y_true, bootstrap_clf_preds)
+        baseline_accuracy = accuracy_score(bootstrap_y_true, bootstrap_baseline_preds)
+        bootstrap_accuracy_diff = clf_accuracy - baseline_accuracy
+        if bootstrap_accuracy_diff > 0:
+            better_metric_count["Accuracy"] += 1
+
+        clf_f1_score = f1_score(bootstrap_y_true, bootstrap_clf_preds, average='weighted', zero_division=0)
+        baseline_f1_score = f1_score(bootstrap_y_true, bootstrap_baseline_preds, average='weighted', zero_division=0)
+        bootstrap_f1_score_diff = clf_f1_score - baseline_f1_score
+        if bootstrap_f1_score_diff > 0:
+            better_metric_count["F1_score"] += 1
     
+    # --- Define results_summary dictionary ---
+    results_summary = {
+        "config": {
+            "task_type": args.task_type,
+            "input_csv": args.input_csv,
+            "pred_csv": args.pred_csv,
+            "baseline_strategy": args.baseline_strategy,
+            "n_bootstrap": args.n_bootstrap,
+            "seed": args.seed
+        },
+        "observed_scores": {
+            "Accuracy": {
+                "estimator": obs_clf_accuracy,
+                "baseline": obs_baseline_accuracy,
+                "difference": (obs_clf_accuracy - obs_baseline_accuracy)
+            },
+            "F1_score": {
+                "estimator": obs_clf_f1,
+                "baseline": obs_baseline_f1,
+                "difference": (obs_clf_f1 - obs_baseline_f1)
+            }
+        },
+        "bootstrap_results": {}
+    }
+
     logger.info("=================================================")
     logger.info("         Bootstrap Test Results         ")
     logger.info("=================================================")
     logger.info(f"  - H0: Estimator_Metric <= Baseline_Metric")
     logger.info(f"  - HA: Estimator_Metric > Baseline_Metric")
-    for score in clf_score_metric:
+    
+    for score in better_metric_count:
         p_value = 1.0 - (better_metric_count[score] / float(args.n_bootstrap))
         percent_better = (better_metric_count[score] / float(args.n_bootstrap)) * 100.0
+        
+        # Log to console
         logger.info(f"--- Metric: {score.upper()} ---")
         logger.info(f"  - Samples where Est > Base: {better_metric_count[score]} / {args.n_bootstrap} ({percent_better:.1f}%)")
         logger.info(f"  - p-value (1 - better_count/N): {p_value:.4f}")
+
+        results_summary["bootstrap_results"][score] = {
+            "better_count": better_metric_count[score],
+            "total_samples": args.n_bootstrap,
+            "p_value": p_value
+        }
 
         if p_value < 0.05:
             logger.info(f"  - RESULT: Statistically significant (p < 0.05).")
