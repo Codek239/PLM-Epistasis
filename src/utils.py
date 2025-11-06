@@ -184,7 +184,7 @@ def evaluate_predictions(
     Dict[str, float]
         A dictionary containing the relevant evaluation metrics for the task.
     """
-    if not pred:
+    if len(pred) == 0:
         print("Warning: Prediction list is empty. Cannot compute metrics.")
         return {}
 
@@ -340,11 +340,21 @@ class AttributionCalculator:
 
         input_embeddings = self.model.plm.embeddings.word_embeddings(input_ids)
         baseline_embeddings = self.model.plm.embeddings.word_embeddings(baseline_ids)
+        
+        # Get the number of baselines from the baseline_embeddings tensor
+        # If we are using multiple baselines (N > 1) and the original
+        # attention mask is only for a single input (batch_size=1),
+        # we must expand the mask to match the number of baselines.
+        n_baselines = baseline_embeddings.shape[0]
+        if n_baselines > 1 and attention_mask.shape[0] == 1:
+            final_attention_mask = attention_mask.expand(n_baselines, -1)
+        else:
+            final_attention_mask = attention_mask
 
         attributions, delta = ig.attribute(
             inputs=input_embeddings,
             baselines=baseline_embeddings,
-            additional_forward_args=(attention_mask,),
+            additional_forward_args=(final_attention_mask,),
             n_steps=n_steps,
             return_convergence_delta=True,
             internal_batch_size=internal_batch_size
