@@ -56,8 +56,7 @@ def parse_args():
                         help="The type of task the model was trained for.")
     parser.add_argument("--model_path", type=str, required=True, help="Path to the trained model checkpoint (.pt file).")
     parser.add_argument("--num_classes", type=int, default=2, help="Number of classes (for classification model).")
-    parser.add_argument("--head_hidden_dim", type=int, default=0,
-                        help="Hidden dim for MLP head used during training. Set to 0 for a linear head.")
+    parser.add_argument("--head_hidden_dim", type=int, default=0,help="Hidden dim for MLP head used during training. Set to 0 for a linear head.")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout value used during training.")
     parser.add_argument("--pooling", type=str, default="cls", choices=["cls", "mean", "max"])
 

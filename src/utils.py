@@ -17,6 +17,13 @@ from transformers import PreTrainedModel, AutoTokenizer
 from sklearn.metrics import f1_score, roc_auc_score, accuracy_score, mean_squared_error
 from scipy.stats import pearsonr
 from captum.attr import IntegratedGradients, NoiseTunnel, InputXGradient
+import networkx as nx
+import pandas as pd
+
+AA_LIST = list("ACDEFGHIKLMNPQRSTVWYO-")
+N_AA = len(AA_LIST)
+aa_to_idx = {aa: i for i, aa in enumerate(AA_LIST)}
+idx_to_aa = {v: k for k, v in aa_to_idx.items()}
 
 def setup_logging(log_dir, task_type):
     os.makedirs(log_dir, exist_ok=True)
@@ -184,7 +191,7 @@ def evaluate_predictions(
     Dict[str, float]
         A dictionary containing the relevant evaluation metrics for the task.
     """
-    if not pred:
+    if len(pred) == 0:
         print("Warning: Prediction list is empty. Cannot compute metrics.")
         return {}
 
@@ -340,11 +347,21 @@ class AttributionCalculator:
 
         input_embeddings = self.model.plm.embeddings.word_embeddings(input_ids)
         baseline_embeddings = self.model.plm.embeddings.word_embeddings(baseline_ids)
+        
+        # Get the number of baselines from the baseline_embeddings tensor
+        # If we are using multiple baselines (N > 1) and the original
+        # attention mask is only for a single input (batch_size=1),
+        # we must expand the mask to match the number of baselines.
+        n_baselines = baseline_embeddings.shape[0]
+        if n_baselines > 1 and attention_mask.shape[0] == 1:
+            final_attention_mask = attention_mask.expand(n_baselines, -1)
+        else:
+            final_attention_mask = attention_mask
 
         attributions, delta = ig.attribute(
             inputs=input_embeddings,
             baselines=baseline_embeddings,
-            additional_forward_args=(attention_mask,),
+            additional_forward_args=(final_attention_mask,),
             n_steps=n_steps,
             return_convergence_delta=True,
             internal_batch_size=internal_batch_size
@@ -395,3 +412,151 @@ class AttributionCalculator:
         
         # Slice to remove special tokens and match original sequence length
         return attributions_sum[1 : len(sequence) + 1]
+
+def create_shuffled_baselines(input_ids: torch.Tensor, n_shuffled_baselines: int = 1) -> torch.Tensor:
+    """Creates a batch of shuffled versions of the input_ids."""
+    
+    # Get the original sequence (assumes batch_size=1)
+    # [1, seq_len] -> [seq_len]
+    original_ids = input_ids.squeeze(0) 
+    
+    baseline_ids_list = []
+    for _ in range(n_shuffled_baselines):
+        # Create a random permutation (shuffle) of the token indices
+        shuffled_indices = torch.randperm(original_ids.shape[0])
+        shuffled_ids = original_ids[shuffled_indices]
+        baseline_ids_list.append(shuffled_ids)
+
+    # Stack into a single tensor: [n_shuffled_baselines, seq_len]
+    baseline_ids_tensor = torch.stack(baseline_ids_list).to(input_ids.device)
+    
+    return baseline_ids_tensor
+
+def min_max_norm(data):
+    data_min = np.min(data)
+    data_max = np.max(data)
+    normalized_data = (data - data_min) / (data_max - data_min)
+    return normalized_data
+
+def magnitude_norm(data, data_min=0):
+    data_max = np.max(np.abs(data))
+    normalized_data = (data - data_min) / (data_max - data_min)
+    return normalized_data
+
+def build_typeaware_arrays(sequences, attr_scalar, attn_scalar):
+    """Expand attention and attribution arrays into amino acid–specific channels."""
+    N_SEQ, L_SEQ = sequences.shape
+    
+    aa_idx_array = np.vectorize(aa_to_idx.get, otypes=[int])(sequences)
+    attr_array = np.zeros((N_SEQ, L_SEQ, N_AA))
+    seq_idx = np.arange(N_SEQ)[:, None]
+    pos_idx = np.arange(L_SEQ)[None, :]
+    attr_array[seq_idx, pos_idx, aa_idx_array] = attr_scalar
+
+    attn_array = np.zeros((N_SEQ, L_SEQ, L_SEQ, N_AA, N_AA))
+    aa_i = aa_idx_array[:, :, None]  # (N_SEQ, L_SEQ, 1)
+    aa_j = aa_idx_array[:, None, :]  # (N_SEQ, 1, L_SEQ)
+    seq_idx = np.arange(N_SEQ)[:, None, None]
+    i_idx = np.arange(L_SEQ)[None, :, None]
+    j_idx = np.arange(L_SEQ)[None, None, :]
+    attn_array[seq_idx, i_idx, j_idx, aa_i, aa_j] = attn_scalar
+
+    return attr_array, attn_array, aa_idx_array
+
+def compute_weighted_attention(attr_array, attn_array, weighted_by, contribution):
+    """Compute weighted attention across all sequences."""
+    N_SEQ, L_SEQ, N_AA = attr_array.shape
+
+    # --- Contribution mask ---
+    if contribution == "Positive":
+        mask = attr_array > 0
+    elif contribution == "Negative":
+        mask = attr_array < 0
+    else:
+        mask = np.ones_like(attr_array, dtype=bool)
+
+    # --- Weight attribution ---
+    if weighted_by == "Source": # Source of Influence (j)
+        # shape → (N_SEQ, L_SEQ, 1, N_AA, 1)
+        weight_attr = attr_array[:, :, None, :, None]
+        mask_attr = mask[:, :, None, :, None]
+    elif weighted_by == "Target": # Target of Influence (i)
+        # shape → (N_SEQ, 1, L_SEQ, 1, N_AA)
+        weight_attr = attr_array[:, None, :, None, :]
+        mask_attr = mask[:, None, :, None, :]
+    else:
+        weight_attr = np.ones((N_SEQ, 1, 1, 1, 1))
+        mask_attr = np.ones((N_SEQ, 1, 1, 1, 1))
+
+    # --- Weighted sum across sequences ---
+    weighted_attn = np.abs(np.sum(attn_array * weight_attr * mask_attr, axis=0))
+
+    # --- Normalize by number of valid positions ---
+    count = np.sum(mask, axis=0)[:, :, None]
+    weighted_attn = np.divide(
+        weighted_attn,
+        np.log1p(np.maximum(count, 1e-8)),
+        out=np.zeros_like(weighted_attn),
+        where=(count > 0)
+    )
+    return weighted_attn
+
+def build_graph(weighted_attn, resno_array):
+    """Construct a directed graph with residue-type nodes and weighted edges."""
+    L_SEQ, _, N_AA, _ = weighted_attn.shape
+    
+    G = nx.DiGraph()
+
+    for i in range(L_SEQ):
+        res_i = resno_array[i]
+        for aa_i in range(N_AA):
+            node_i = f"{res_i}_{idx_to_aa[aa_i]}"
+            G.add_node(node_i, resno=res_i, aa=idx_to_aa[aa_i], pos=i)
+
+    for i in range(L_SEQ):
+        for j in range(L_SEQ):
+            for aa_i in range(N_AA):
+                for aa_j in range(N_AA):
+                    w = weighted_attn[i, j, aa_i, aa_j]
+                    if w > 0:
+                        node_i = f"{resno_array[i]}_{idx_to_aa[aa_i]}"
+                        node_j = f"{resno_array[j]}_{idx_to_aa[aa_j]}"
+                        G.add_edge(node_i, node_j, weight=float(w))
+
+    # Remove isolated nodes
+    isolated = list(nx.isolates(G))
+    G.remove_nodes_from(isolated)
+    print(f"Graph constructed with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
+    return G
+
+def compute_residue_centrality(G):
+    """Compute multiple centrality measures for the residue interaction network."""
+
+    # Betweenness centrality (weighted)
+    betweenness = nx.betweenness_centrality(G, weight='weight', normalized=True)
+
+    # In-degree and out-degree centrality (weighted)
+    in_deg = dict(G.in_degree(weight='weight'))
+    out_deg = dict(G.out_degree(weight='weight'))
+
+    # PageRank (weighted)
+    pagerank = nx.pagerank(G, weight='weight')
+
+    # Combine into DataFrame
+    df = pd.DataFrame({
+        'Node': list(G.nodes()),
+        'Betweenness': [betweenness[n] for n in G.nodes()],
+        'InDegree': [in_deg.get(n, 0) for n in G.nodes()],
+        'OutDegree': [out_deg.get(n, 0) for n in G.nodes()],
+        'PageRank': [pagerank[n] for n in G.nodes()],
+    })
+
+    # Composite importance score (optional)
+    df["Centrality_Score"] = (
+        df["PageRank"].rank(pct=True) * 0.5 +
+        df["Betweenness"].rank(pct=True) * 0.3 +
+        df["InDegree"].rank(pct=True) * 0.2
+    )
+
+    df = df.sort_values("Centrality_Score", ascending=False).reset_index(drop=True)
+    return df

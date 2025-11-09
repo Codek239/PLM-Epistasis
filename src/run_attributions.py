@@ -1,5 +1,5 @@
 """
-attr.py
+run_attributions.py
 -------
 Compute residue-level attribution scores from a trained PLM model using either
 standard Integrated Gradients (IG), SmoothGrad-IG or InputXGradient
@@ -136,7 +136,7 @@ def main():
                     )
             elif args.method == 'ig':
                 attribution, delta = calculator.compute_ig(
-                    sequence, input_ids, attention_mask, 
+                    sequence, input_ids, attention_mask,
                     n_steps=args.n_steps
                     )
             elif args.method == 'gxi':
