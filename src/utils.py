@@ -507,7 +507,8 @@ def compute_weighted_attention(attr_array, attn_array, weighted_by, contribution
     count = np.sum(mask, axis=0)[:, :, None]
     weighted_attn = np.divide(
         weighted_attn,
-        np.log1p(np.maximum(count, 1e-8)),
+        #np.log1p(np.maximum(count, 1e-8)),
+        np.maximum(count, 1e-8),
         out=np.zeros_like(weighted_attn),
         where=(count > 0)
     )
